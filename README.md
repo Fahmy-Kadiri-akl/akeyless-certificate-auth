@@ -228,11 +228,13 @@ config:
     tertiaryBorderColor: "#D9960A"
 ---
 graph LR
-    subgraph Akeyless["Akeyless Platform"]
+    subgraph Akeyless["Akeyless SaaS"]
         ROOT_KEY["Root CA<br/>(DFC key)"]
         INT_KEY["Intermediate CA<br/>(PKI Certificate Issuer)"]
-        AUTH["Certificate Auth Method"]
+        AUTH["Certificate Auth Method<br/>(stores CA cert)"]
     end
+
+    GW["Gateway<br/>(stateless)"]
 
     subgraph Operator["Operator"]
         CLIENT["Client Certificate<br/>+ Private Key"]
@@ -240,14 +242,16 @@ graph LR
     end
 
     ROOT_KEY -->|signs| INT_KEY
-    INT_KEY -->|issues| CLIENT
-    CLIENT -->|authenticates| AUTH
-    AUTH -->|validates chain| ROOT_KEY
+    INT_KEY -->|"issues (via Gateway)"| CLIENT
+    CLIENT -->|authenticates| GW
+    GW -->|forwards| AUTH
+    AUTH -->|validates against| ROOT_KEY
 
     style Akeyless fill:#E8F0FE,stroke:#2D6CB4,color:#333
     style ROOT_KEY fill:#4A90D9,stroke:#2D6CB4,color:#fff
     style INT_KEY fill:#4A90D9,stroke:#2D6CB4,color:#fff
     style AUTH fill:#4A90D9,stroke:#2D6CB4,color:#fff
+    style GW fill:#FFF3CD,stroke:#D9960A,color:#333
     style Operator fill:#E8F8E8,stroke:#449D44,color:#333
     style CLIENT fill:#5CB85C,stroke:#449D44,color:#fff
     style CLI fill:#5CB85C,stroke:#449D44,color:#fff
@@ -375,9 +379,11 @@ graph LR
         INT["Issuing CA<br/>(Intermediate)"]
     end
 
-    subgraph AKL["Akeyless"]
+    subgraph AKL["Akeyless SaaS"]
         AUTH["Certificate Auth Method<br/>(stores CA chain)"]
     end
+
+    GW["Gateway<br/>(stateless)"]
 
     subgraph Operator["Operator"]
         CSR["Generate CSR"]
@@ -389,13 +395,15 @@ graph LR
     INT -->|issues| CLIENT
     ROOT -.->|export & upload| AUTH
     INT -.->|export & upload| AUTH
-    CLIENT -->|authenticates| AUTH
+    CLIENT -->|authenticates| GW
+    GW -->|forwards| AUTH
 
     style EntCA fill:#FFF3CD,stroke:#D9960A,color:#333
     style ROOT fill:#F0AD4E,stroke:#D9960A,color:#fff
     style INT fill:#F0AD4E,stroke:#D9960A,color:#fff
     style AKL fill:#E8F0FE,stroke:#2D6CB4,color:#333
     style AUTH fill:#4A90D9,stroke:#2D6CB4,color:#fff
+    style GW fill:#FFF3CD,stroke:#D9960A,color:#333
     style Operator fill:#E8F8E8,stroke:#449D44,color:#333
     style CSR fill:#5CB85C,stroke:#449D44,color:#fff
     style CLIENT fill:#5CB85C,stroke:#449D44,color:#fff
