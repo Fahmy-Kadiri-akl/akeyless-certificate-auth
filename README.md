@@ -64,7 +64,7 @@ graph TD
 
 ## How Certificate Auth Works
 
-When a client authenticates to Akeyless with a certificate, the request goes through the Gateway, which verifies the client certificate against the CA certificate stored by the platform. Akeyless does not call out to your CA or check a CRL in real time. The entire trust relationship is established at setup time.
+When a client authenticates to Akeyless with a certificate, the request goes through the customer-deployed Gateway to the Akeyless SaaS platform. The platform validates the client certificate against the CA certificate you uploaded when you created the auth method. Akeyless does not call out to your CA or check a CRL in real time - the entire trust relationship is established at setup time.
 
 ```mermaid
 ---
@@ -82,27 +82,28 @@ config:
 ---
 sequenceDiagram
     participant Client as Client (pipeline, script, app)
-    participant GW as Gateway<br/>(customer-deployed)
+    participant GW as Gateway<br/>(customer-deployed, stateless)
     participant AKL as Akeyless SaaS<br/>(api.akeyless.io)
-
-    Note over AKL: Stores auth method config,<br/>CA certificate, roles
-
-    AKL-->>GW: Sync auth method + CA cert
 
     Note over Client: Has: client cert + private key
 
     Client->>GW: POST /auth {access-type: cert, cert-data, key-data}
+    GW->>AKL: Forward auth request
 
-    Note over GW: 1. Decode the client certificate<br/>2. Verify signature against synced CA cert<br/>3. Check expiration<br/>4. Match sub-claims (CN, OU, etc.)
+    Note over AKL: 1. Decode the client certificate<br/>2. Verify signature against stored CA cert<br/>3. Check expiration<br/>4. Match sub-claims (CN, OU, etc.)
 
-    GW->>AKL: Certificate validated, request token
-    AKL-->>GW: {token: "t-xxxxx"}
-    GW-->>Client: {token: "t-xxxxx"}
+    alt Validation passes
+        AKL-->>GW: {token: "t-xxxxx"}
+        GW-->>Client: {token: "t-xxxxx"}
+    else Validation fails
+        AKL-->>GW: 401 - "failed to verify client certificate"
+        GW-->>Client: 401 - "failed to verify client certificate"
+    end
 ```
 
-The auth method and CA certificate are created on the **Akeyless SaaS platform** and synced to the Gateway automatically. The Gateway performs the certificate validation locally using the synced configuration, then coordinates with the platform to issue a token. There is no separate CA upload step on the Gateway.
+The Gateway is **stateless** - it does not store secrets, auth configs, or CA certificates. It receives requests from clients in your network, forwards them to the Akeyless SaaS platform, and returns the response. The auth method, CA certificate, roles, and validation logic all live on the platform.
 
-> **CLI note:** The Akeyless CLI can also authenticate directly against `api.akeyless.io` - the CLI handles the certificate challenge locally. For SDK and API-based authentication in production, the Gateway is the standard path.
+> **CLI note:** The Akeyless CLI can also authenticate directly against `api.akeyless.io` without a Gateway - the CLI handles the certificate challenge locally. For SDK and API-based authentication in production, the Gateway is the standard path since it keeps the client's private key within your network boundary.
 
 Akeyless checks four things during certificate authentication:
 
@@ -588,7 +589,7 @@ This step is the same regardless of which CA option you used above. You need the
 
 ### Where things live
 
-The auth method is created on the **Akeyless SaaS platform** - not on the Gateway. The CA certificate you upload is stored by the platform and replicated to every Gateway that needs it. When a client authenticates, the validation happens at whichever endpoint received the request.
+The auth method, CA certificate, roles, and all validation logic live on the **Akeyless SaaS platform**. The Gateway is a stateless proxy in your network that forwards auth requests to the platform and returns the result.
 
 ```mermaid
 ---
@@ -607,7 +608,7 @@ config:
 sequenceDiagram
     participant Op as Operator
     participant SaaS as Akeyless SaaS<br/>(api.akeyless.io)
-    participant GW as Gateway<br/>(customer-deployed)
+    participant GW as Gateway<br/>(stateless)
     participant Client as Client<br/>(pipeline, script)
 
     rect rgb(232, 240, 254)
@@ -615,30 +616,25 @@ sequenceDiagram
     Op->>SaaS: auth-method create cert<br/>(uploads CA certificate)
     SaaS->>SaaS: Store CA cert + auth method config
     Op->>SaaS: create-role, set-role-rule, assoc-role-am
-    SaaS-->>GW: Sync auth method config to Gateway
     end
 
     rect rgb(232, 248, 232)
-    Note over Client,GW: Runtime authentication (happens every time)
-    alt Client authenticates via SaaS
-        Client->>SaaS: POST /auth {cert-data, key-data}
-        SaaS->>SaaS: Validate cert against stored CA
-        SaaS-->>Client: token
-    else Client authenticates via Gateway
-        Client->>GW: POST /auth {cert-data, key-data}
-        GW->>GW: Validate cert against synced CA
-        GW-->>Client: token
-    end
+    Note over Client,SaaS: Runtime authentication (happens every time)
+    Client->>GW: POST /auth {cert-data, key-data}
+    GW->>SaaS: Forward auth request
+    SaaS->>SaaS: Validate cert against stored CA
+    SaaS-->>GW: token (or 401)
+    GW-->>Client: token (or 401)
     end
 ```
 
 | Component | Role in certificate auth |
 |-----------|------------------------|
-| **Akeyless SaaS** (`api.akeyless.io`) | Stores the auth method, CA certificate, roles, and associations. Handles auth requests from clients that connect directly. |
-| **Gateway** (customer-deployed) | Receives a copy of the auth method config from SaaS. Handles auth requests from clients in your network. No separate CA upload needed - the Gateway syncs automatically. |
+| **Akeyless SaaS** (`api.akeyless.io`) | Stores the auth method, CA certificate, roles, and associations. Performs certificate validation and issues tokens. |
+| **Gateway** (customer-deployed) | Stateless proxy in your network. Forwards auth requests to the platform and returns the response. No CA certificate is stored on the Gateway. |
 | **Akeyless Console** (`console.akeyless.io`) | Web UI for creating and managing auth methods. Equivalent to the CLI commands below. |
 
-You create the auth method once (via CLI or Console), and it is available on both the SaaS endpoint and every connected Gateway. Clients can authenticate against either endpoint - use the Gateway URL if the client is inside your network, or `api.akeyless.io` if it's external.
+You create the auth method once (via CLI or Console). Clients authenticate through the Gateway, which forwards the request to the platform for validation.
 
 > **Option A note:** If you used Akeyless Internal PKI (Option A), the PKI Certificate Issuer requires a Gateway to issue certificates (the `get-pki-certificate` command routes through the Gateway). But the auth method itself is still created on the SaaS platform.
 
