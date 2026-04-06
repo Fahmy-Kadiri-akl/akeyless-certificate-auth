@@ -64,7 +64,7 @@ graph TD
 
 ## How Certificate Auth Works
 
-When a client authenticates to Akeyless with a certificate, the Gateway verifies the client certificate against the CA certificate you uploaded when you created the auth method. Akeyless does not call out to your CA or check a CRL in real time. The entire trust relationship is established at setup time.
+When a client authenticates to Akeyless with a certificate, the request goes through the Gateway, which verifies the client certificate against the CA certificate stored by the platform. Akeyless does not call out to your CA or check a CRL in real time. The entire trust relationship is established at setup time.
 
 ```mermaid
 ---
@@ -85,22 +85,24 @@ sequenceDiagram
     participant GW as Gateway<br/>(customer-deployed)
     participant AKL as Akeyless SaaS<br/>(api.akeyless.io)
 
+    Note over AKL: Stores auth method config,<br/>CA certificate, roles
+
+    AKL-->>GW: Sync auth method + CA cert
+
     Note over Client: Has: client cert + private key
 
     Client->>GW: POST /auth {access-type: cert, cert-data, key-data}
 
-    Note over GW: 1. Decode the client certificate<br/>2. Verify signature against stored CA cert<br/>3. Check expiration<br/>4. Match sub-claims (CN, OU, etc.)
+    Note over GW: 1. Decode the client certificate<br/>2. Verify signature against synced CA cert<br/>3. Check expiration<br/>4. Match sub-claims (CN, OU, etc.)
 
-    alt Validation passes
-        GW-->>Client: {token: "t-xxxxx"}
-    else Validation fails
-        GW-->>Client: 401 - "failed to verify client certificate"
-    end
+    GW->>AKL: Certificate validated, request token
+    AKL-->>GW: {token: "t-xxxxx"}
+    GW-->>Client: {token: "t-xxxxx"}
 ```
 
-The Gateway receives the auth method configuration (including the CA certificate) from the Akeyless SaaS platform automatically when you create the auth method. There is no separate CA upload step on the Gateway.
+The auth method and CA certificate are created on the **Akeyless SaaS platform** and synced to the Gateway automatically. The Gateway performs the certificate validation locally using the synced configuration, then coordinates with the platform to issue a token. There is no separate CA upload step on the Gateway.
 
-> **CLI/UI note:** When using the Akeyless CLI or Console, certificate auth can also be performed directly against `api.akeyless.io` without routing through a Gateway. The CLI handles the certificate challenge locally. For SDK-based and API-based authentication in production, the Gateway is the standard path - the private key is sent to the Gateway for challenge verification.
+> **CLI note:** The Akeyless CLI can also authenticate directly against `api.akeyless.io` - the CLI handles the certificate challenge locally. For SDK and API-based authentication in production, the Gateway is the standard path.
 
 Akeyless checks four things during certificate authentication:
 
