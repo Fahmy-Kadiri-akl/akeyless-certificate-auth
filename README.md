@@ -120,7 +120,7 @@ Here is how certificate auth actually works, depending on your starting point:
 | Your situation | What to do | Do you need Akeyless PKI? |
 |----------------|-----------|--------------------------|
 | You have an enterprise CA (Microsoft AD CS, AppViewX, Venafi, etc.) | Export the CA chain, upload it to the Akeyless auth method, issue a client cert from your CA | **No.** Go to [Option B](#option-b-external-enterprise-ca). |
-| You don't have any PKI and want Akeyless to manage it | Use Akeyless to create a root CA, intermediate CA, and issue client certs | **Yes, this is the one case where you use it.** Go to [Option A](#option-a-akeyless-internal-pki). |
+| You don't have any PKI and want Akeyless to manage it | Use Akeyless to create a root CA, intermediate CA, and issue client certs | **Yes,** Go to [Option A](#option-a-akeyless-internal-pki). |
 | You want a quick setup for dev/test | Generate a self-signed CA and client cert with openssl | **No.** Go to [Option C](#option-c-self-signed-certificates). |
 | You have a self-signed certificate (no CA at all) | A single self-signed cert acts as both the CA and the client cert. Upload it to the auth method and present it during auth. | **No.** See the note in [Option C](#option-c-self-signed-certificates). |
 
