@@ -128,7 +128,7 @@ else
       echo "       Extract the raw certificate and re-encode it:"
       echo "         openssl x509 -in <problem-cert> -out fixed.pem"
     else
-      IS_CA=$(openssl x509 -in "$f" -noout -text 2>/dev/null | grep -c "CA:TRUE" || echo "0")
+      IS_CA=$(openssl x509 -in "$f" -noout -text 2>/dev/null | grep -c "CA:TRUE" || true)
       if [ "$IS_CA" -gt 0 ]; then
         pass "Certificate #${CERT_INDEX} (CA): ${SUBJ}"
       else
@@ -138,10 +138,10 @@ else
   done
 
   # Check for missing newline between concatenated certs
-  if grep -q "END CERTIFICATE-----BEGIN CERTIFICATE" "$CA_CERT" 2>/dev/null; then
+  if grep -q "END CERTIFICATE.*BEGIN CERTIFICATE" "$CA_CERT" 2>/dev/null; then
     fail "Missing newline between certificates in chain file"
     echo "       The END and BEGIN markers are on the same line. Fix with:"
-    echo "       sed -i 's/-----END CERTIFICATE----------BEGIN CERTIFICATE-----/-----END CERTIFICATE-----\\n-----BEGIN CERTIFICATE-----/g' ${CA_CERT}"
+    echo "       awk '/-----END CERTIFICATE-----/{print; print \"\"; next}1' ${CA_CERT} > fixed.pem && mv fixed.pem ${CA_CERT}"
   fi
 
   rm -rf "${TMPDIR}"
@@ -183,7 +183,7 @@ echo ""
 # 5. Chain verification
 # ---------------------------------------------------------------------------
 echo "[5] Chain Verification"
-VERIFY_OUTPUT=$(openssl verify -CAfile "$CA_CERT" "$CLIENT_CERT" 2>&1)
+VERIFY_OUTPUT=$(openssl verify -CAfile "$CA_CERT" "$CLIENT_CERT" 2>&1 || true)
 if echo "$VERIFY_OUTPUT" | grep -q ": OK"; then
   pass "Client cert is signed by the CA chain"
 else
