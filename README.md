@@ -58,7 +58,8 @@ graph TD
 6. [Create the Auth Method in Akeyless](#create-the-auth-method-in-akeyless)
 7. [Test Authentication](#test-authentication)
 8. [Using Certificate Auth in Pipelines](#using-certificate-auth-in-pipelines)
-9. [Troubleshooting](#troubleshooting)
+9. [Verify Your Certificates](#verify-your-certificates)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -865,6 +866,67 @@ env:
 
 ---
 
+## Verify Your Certificates
+
+Before creating or updating an auth method in Akeyless, run the diagnostic script to validate your certificate setup. This catches the most common issues - format problems, broken chains, missing key usage, expired certs - before they surface as cryptic Akeyless errors.
+
+```bash
+bash scripts/verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
+```
+
+The script runs 8 checks in order:
+
+| Check | What it validates | What a failure means |
+|-------|-------------------|---------------------|
+| **PEM format and encoding** | Detects DER, PKCS7 wrappers, Windows CRLF line endings, and extraneous text before the certificate markers | The file needs to be converted or cleaned before Akeyless can read it |
+| **Chain splitting** | Splits the CA chain into individual certificates and decodes each one separately | Identifies exactly which certificate in the chain is corrupt or malformed (the "failed to decode intermediate certificate" error) |
+| **CA certificate readability** | Confirms the first certificate in the chain can be parsed | The CA cert file is damaged or in the wrong format |
+| **Client certificate readability** | Confirms the client cert can be parsed | The client cert file is damaged or in the wrong format |
+| **Chain verification** | Verifies the client cert's signature traces back to the CA chain (`openssl verify`) | The chain is missing the intermediate CA, or the client cert was signed by a different CA |
+| **Extended Key Usage** | Checks for `TLS Web Client Authentication` in the client cert | The cert was issued without `clientAuth` EKU - reissue it with a client authentication template |
+| **Private key match** | Compares the public key in the cert against the private key file | The key and cert are not from the same CSR - locate the matching key or regenerate both |
+| **Expiration** | Checks both the client cert and CA cert, with a 30-day warning | Expired certs are rejected by Akeyless - reissue from your CA |
+
+Each failure includes the specific problem, the cause, and the exact command to fix it. All checks must pass before you configure the auth method.
+
+**Example output (healthy):**
+
+```
+[1] PEM Format and Encoding
+  PASS: CA cert is PEM format
+  PASS: Client cert is PEM format
+
+[2] CA Chain - Individual Certificate Validation
+  Certificates in chain file: 2
+  PASS: Certificate #1 (CA): subject=CN=Intermediate CA, O=YourOrg
+  PASS: Certificate #2 (CA): subject=CN=Root CA, O=YourOrg
+
+...
+
+==============================================
+  RESULTS
+==============================================
+  Passed:   11
+  Warnings: 0
+  Failed:   0
+==============================================
+
+  All checks passed. Safe to create the Akeyless cert auth method.
+```
+
+**Example output (broken intermediate):**
+
+```
+[2] CA Chain - Individual Certificate Validation
+  Certificates in chain file: 2
+  FAIL: Certificate #1 in chain FAILED TO DECODE
+       Problem:  The base64 data in certificate #1 cannot be parsed as an X.509 certificate.
+       Fix:      Re-export certificate #1 from your CA and rebuild the chain.
+  PASS: Certificate #2 (CA): subject=CN=Root CA, O=YourOrg
+```
+
+---
+
 ## Troubleshooting
 
 ### "failed to verify client certificate (signer or expiration)"
@@ -924,13 +986,7 @@ Akeyless was able to read the root CA but could not parse the intermediate certi
 | **Missing newline between certificates** - END and BEGIN markers on the same line | `grep "END CERTIFICATE-----BEGIN" ca-chain.pem` finds a match | Add the newline: `sed -i 's/-----END CERTIFICATE----------BEGIN CERTIFICATE-----/-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----/g' ca-chain.pem` |
 | **Corrupted base64** - the certificate data was truncated or modified | `openssl x509 -in intermediate.pem -noout` fails | Re-export the intermediate CA certificate from your PKI |
 
-Run the diagnostic script to identify exactly which certificate in the chain has the problem:
-
-```bash
-bash scripts/verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
-```
-
-The script splits the chain file, tests each certificate individually, and reports which one failed to decode and why.
+Run the [diagnostic script](#verify-your-certificates) to identify exactly which certificate in the chain has the problem and how to fix it.
 
 ### "certificate is not in PEM format"
 
@@ -945,12 +1001,3 @@ openssl pkcs12 -in cert.pfx -out client-cert.pem -clcerts -nokeys
 openssl pkcs12 -in cert.pfx -out client-key.pem -nocerts -nodes
 ```
 
-### Diagnostic script
-
-The `scripts/verify-certs.sh` script validates your entire certificate setup before you touch Akeyless. It checks PEM format, PKCS7 wrappers, CRLF line endings, extraneous text, splits the chain to test each certificate individually, verifies the trust chain, checks clientAuth EKU, matches the private key, and checks expiration.
-
-```bash
-bash scripts/verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
-```
-
-All checks should pass before you configure the Akeyless auth method.
