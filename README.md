@@ -582,6 +582,62 @@ You now have:
 
 This step is the same regardless of which CA option you used above. You need the CA certificate (or chain) in PEM format.
 
+### Where things live
+
+The auth method is created on the **Akeyless SaaS platform** - not on the Gateway. The CA certificate you upload is stored by the platform and replicated to every Gateway that needs it. When a client authenticates, the validation happens at whichever endpoint received the request.
+
+```mermaid
+---
+config:
+  look: handDrawn
+  theme: base
+  themeVariables:
+    actorBkg: "#4A90D9"
+    actorTextColor: "#fff"
+    actorBorder: "#2D6CB4"
+    signalColor: "#333"
+    noteBkgColor: "#FFF3CD"
+    noteBorderColor: "#D9960A"
+    noteTextColor: "#333"
+---
+sequenceDiagram
+    participant Op as Operator
+    participant SaaS as Akeyless SaaS<br/>(api.akeyless.io)
+    participant GW as Gateway<br/>(customer-deployed)
+    participant Client as Client<br/>(pipeline, script)
+
+    rect rgb(232, 240, 254)
+    Note over Op,SaaS: One-time setup (you do this now)
+    Op->>SaaS: auth-method create cert<br/>(uploads CA certificate)
+    SaaS->>SaaS: Store CA cert + auth method config
+    Op->>SaaS: create-role, set-role-rule, assoc-role-am
+    SaaS-->>GW: Sync auth method config to Gateway
+    end
+
+    rect rgb(232, 248, 232)
+    Note over Client,GW: Runtime authentication (happens every time)
+    alt Client authenticates via SaaS
+        Client->>SaaS: POST /auth {cert-data, key-data}
+        SaaS->>SaaS: Validate cert against stored CA
+        SaaS-->>Client: token
+    else Client authenticates via Gateway
+        Client->>GW: POST /auth {cert-data, key-data}
+        GW->>GW: Validate cert against synced CA
+        GW-->>Client: token
+    end
+    end
+```
+
+| Component | Role in certificate auth |
+|-----------|------------------------|
+| **Akeyless SaaS** (`api.akeyless.io`) | Stores the auth method, CA certificate, roles, and associations. Handles auth requests from clients that connect directly. |
+| **Gateway** (customer-deployed) | Receives a copy of the auth method config from SaaS. Handles auth requests from clients in your network. No separate CA upload needed - the Gateway syncs automatically. |
+| **Akeyless Console** (`console.akeyless.io`) | Web UI for creating and managing auth methods. Equivalent to the CLI commands below. |
+
+You create the auth method once (via CLI or Console), and it is available on both the SaaS endpoint and every connected Gateway. Clients can authenticate against either endpoint - use the Gateway URL if the client is inside your network, or `api.akeyless.io` if it's external.
+
+> **Option A note:** If you used Akeyless Internal PKI (Option A), the PKI Certificate Issuer requires a Gateway to issue certificates (the `get-pki-certificate` command routes through the Gateway). But the auth method itself is still created on the SaaS platform.
+
 ### Using the Akeyless CLI
 
 ```bash
@@ -664,7 +720,7 @@ akeyless list-auth-methods --json | \
 
 ## Test Authentication
 
-### CLI
+### CLI (via Akeyless SaaS)
 
 ```bash
 akeyless auth \
@@ -674,11 +730,27 @@ akeyless auth \
   --key-file-name client-key.pem
 ```
 
-Expected output: a token starting with `t-`.
+Expected output: `Authentication succeeded.` followed by a token starting with `t-`.
+
+### CLI (via Gateway)
+
+If your client is inside the network and should authenticate through the Gateway:
+
+```bash
+akeyless auth \
+  --access-id "p-xxxxxxxxxx" \
+  --access-type cert \
+  --cert-file-name client-cert.pem \
+  --key-file-name client-key.pem \
+  --gateway-url "https://your-gateway.example.com:8000"
+```
 
 ### REST API (curl)
 
+Works against either the SaaS endpoint or the Gateway. Replace the URL with your Gateway if needed.
+
 ```bash
+# Via SaaS
 TOKEN=$(curl -sf -X POST "https://api.akeyless.io/auth" \
   -H "Content-Type: application/json" \
   -d "{
@@ -687,6 +759,9 @@ TOKEN=$(curl -sf -X POST "https://api.akeyless.io/auth" \
     \"cert-data\": \"$(base64 -w0 client-cert.pem)\",
     \"key-data\": \"$(base64 -w0 client-key.pem)\"
   }" | jq -r '.token')
+
+# Via Gateway (same payload, different URL)
+# curl -sf -X POST "https://your-gateway.example.com:8081/auth" ...
 
 echo "Token: ${TOKEN:0:20}..."
 ```
