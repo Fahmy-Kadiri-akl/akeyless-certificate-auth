@@ -1,0 +1,23 @@
+# Private keys and certificates
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.pfx
+*.p12
+*.csr
+*.srl
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
