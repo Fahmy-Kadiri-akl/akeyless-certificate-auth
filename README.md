@@ -716,6 +716,37 @@ akeyless assoc-role-am \
 
 The `--sub-claims` on the role association is an additional filter beyond the auth method's bound claims. A client must match both the auth method's bounds and the role association's sub-claims to get that role's permissions.
 
+### Gateway Allowed Access (if authenticating via Gateway)
+
+The RBAC role above controls what the authenticated identity can do on the **platform** (read secrets, list items, etc.). If the identity will also perform **Gateway-level operations** - such as rotating secrets, managing dynamic secrets, or issuing PKI certificates - the access ID must be explicitly granted permissions on the Gateway itself.
+
+RBAC and Gateway Allowed Access are two separate permission layers. Both must be in place for Gateway operations to succeed.
+
+```bash
+akeyless gateway-create-allowed-access \
+  --name "cert-auth-pipeline-access" \
+  --access-id "p-xxxxxxxxxx" \
+  --permissions defaults \
+  --gateway-url "https://your-gateway.example.com:8000"
+```
+
+Assign the minimum permissions needed:
+
+| Permission | When needed |
+|-----------|-------------|
+| `defaults` | Basic Gateway access (sufficient for authentication and secret retrieval through the Gateway) |
+| `targets` | Creating or managing web targets |
+| `dynamic_secret` | Managing dynamic secret configuration |
+| `rotated_secret` | Managing rotated secret configuration |
+| `log_forwarding` | Managing log forwarding settings |
+| `caching` | Managing cache settings |
+| `kmip` | Managing KMIP service |
+| `admin` | Full Gateway administration (avoid in production - use least privilege) |
+
+For most certificate auth use cases (authenticate and fetch secrets), `defaults` is sufficient. Add `rotated_secret` if the identity will trigger rotations, or `targets` if it will manage targets.
+
+> **If you skip this step**, authentication via the Gateway will fail with a permission error even though RBAC is correctly configured. This is the most common "it works with admin but not with my service account" issue.
+
 Note the **access ID** printed when the auth method was created (it starts with `p-`). You'll need this to authenticate.
 
 ```bash
