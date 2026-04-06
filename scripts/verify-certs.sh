@@ -82,8 +82,8 @@ echo ""
 
 # 5. Key match
 echo "[5] Private Key Match"
-CERT_PUB=$(openssl x509 -in "$CLIENT_CERT" -noout -pubkey 2>/dev/null | md5sum)
-KEY_PUB=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | md5sum)
+CERT_PUB=$(openssl x509 -in "$CLIENT_CERT" -noout -pubkey 2>/dev/null | openssl dgst -md5)
+KEY_PUB=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | openssl dgst -md5)
 if [ "$CERT_PUB" = "$KEY_PUB" ]; then
   pass "Private key matches certificate"
 else

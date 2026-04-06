@@ -336,8 +336,28 @@ akeyless get-pki-certificate \
 
 > **TTL:** `2592000` = 30 days. In production, use short-lived certificates and automate renewal.
 
+### A.5 Build the CA chain file
+
+The client certificate is signed by the intermediate CA (the PKI Certificate Issuer), not directly by the root. You need to upload the full chain to the auth method. Export the intermediate CA certificate and concatenate it with the root:
+
+```bash
+# Export the intermediate CA certificate
+akeyless get-pki-certificate \
+  --cert-issuer-name "/PKI/CertAuth/IntermediateCA" \
+  --key-data-base64 "$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 -w0)" \
+  --common-name "IntermediateCA" \
+  --ttl 31536000 \
+  > intermediate-ca.pem
+
+# Build the chain (intermediate first, root last)
+cat intermediate-ca.pem root-ca.pem > ca-chain.pem
+
+# Verify
+openssl verify -CAfile ca-chain.pem client-cert.pem
+```
+
 You now have:
-- `root-ca.pem` - the Root CA certificate (upload to Akeyless auth method)
+- `ca-chain.pem` - the CA chain (upload to Akeyless auth method)
 - `client-cert.pem` - the client certificate (used by pipelines)
 - `client-key.pem` - the client private key (used by pipelines)
 
@@ -531,7 +551,21 @@ There are two variants:
 - **C-1: Self-signed CA + client cert** (recommended) - you create a local CA and use it to sign a separate client certificate. This mirrors how production PKI works and lets you issue multiple client certs from the same CA.
 - **C-2: Single self-signed cert** - the same certificate is both the CA and the client. Upload it to the auth method and present it during authentication. This works but means each client needs its own auth method entry, so it doesn't scale.
 
-The steps below cover variant C-1. For variant C-2, generate a single self-signed cert with `clientAuth` EKU, upload it as the CA certificate in the auth method, and use the same cert + key to authenticate.
+The steps below cover variant C-1. For variant C-2 (single self-signed cert acting as both CA and client):
+
+```bash
+# Generate key + self-signed cert with clientAuth in one step
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout client-key.pem -out client-cert.pem -days 365 \
+  -subj "/CN=pipeline-client/OU=DevOps" \
+  -addext "extendedKeyUsage=clientAuth"
+
+# Use the same cert as both the CA and client cert
+# Upload client-cert.pem as the CA in the auth method
+# Present client-cert.pem + client-key.pem during authentication
+```
+
+Then skip to [Create the Auth Method in Akeyless](#create-the-auth-method-in-akeyless), using `client-cert.pem` in place of `ca-chain.pem`.
 
 ### C.1 Generate a self-signed CA
 
@@ -543,6 +577,8 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ca-key.pem
 openssl req -new -x509 -key ca-key.pem -out ca-cert.pem -days 3650 \
   -subj "/CN=Akeyless Dev CA/O=DevOps"
 ```
+
+> **Protect `ca-key.pem`.** This is the trust anchor for your auth method. Anyone with this key can generate client certificates that authenticate to Akeyless. Store it offline or in a secrets manager - do not leave it in your working directory, commit it to git, or include it in container images. The `.gitignore` in this repo excludes `*.pem` files, but git is not the only way keys get leaked.
 
 ### C.2 Generate a client certificate signed by this CA
 
@@ -707,7 +743,7 @@ export AKEYLESS_CERT_DATA=$(base64 -w0 /path/to/client-cert.pem)
 export AKEYLESS_KEY_DATA=$(base64 -w0 /path/to/client-key.pem)
 ```
 
-> **`base64 -w0`** is critical. The `-w0` flag disables line wrapping. Without it, the base64 output contains newlines that break the JSON payload when passed to the API.
+> **`base64 -w0`** is critical. The `-w0` flag disables line wrapping. Without it, the base64 output contains newlines that break the JSON payload when passed to the API. On **macOS**, use `base64 -b 0` instead - macOS does not support the `-w` flag.
 
 ### GitHub Actions
 
@@ -744,8 +780,16 @@ This is the most common error. It means Akeyless could not validate the signatur
 
 | Cause | How to check | Fix |
 |-------|-------------|-----|
-| **Incomplete chain** - uploaded root CA only, but client cert was signed by an intermediate | `openssl verify -CAfile ca-chain.pem client-cert.pem` returns an error about unable to get local issuer | Upload the full chain: `cat intermediate-ca.pem root-ca.pem > ca-chain.pem` and update the auth method |
-| **Wrong CA uploaded** - the auth method has a different CA than the one that signed the client cert | `openssl x509 -in ca-chain.pem -noout -issuer` doesn't match the client cert's issuer | Export the correct CA certificate from your PKI and re-upload |
+| **Incomplete chain** - uploaded root CA only, but client cert was signed by an intermediate | `openssl verify -CAfile ca-chain.pem client-cert.pem` returns an error about unable to get local issuer | Upload the full chain: `cat intermediate-ca.pem root-ca.pem > ca-chain.pem` and update the auth method (see below) |
+| **Wrong CA uploaded** - the auth method has a different CA than the one that signed the client cert | `openssl x509 -in ca-chain.pem -noout -issuer` doesn't match the client cert's issuer | Export the correct CA certificate from your PKI and re-upload (see below) |
+
+To update an existing auth method's CA certificate:
+
+```bash
+akeyless update-auth-method-cert \
+  --name "/Auth/CertificateAuth" \
+  --certificate-data "$(base64 -w0 ca-chain.pem)"
+```
 | **Client cert expired** | `openssl x509 -in client-cert.pem -noout -dates` shows `notAfter` in the past | Issue a new client certificate |
 | **CA cert expired** | `openssl x509 -in ca-cert.pem -noout -dates` shows `notAfter` in the past | Renew the CA certificate and update the auth method |
 | **DER format instead of PEM** | `file client-cert.pem` shows "data" instead of "PEM certificate" | Convert: `openssl x509 -in cert.cer -inform DER -out cert.pem -outform PEM` |
@@ -824,9 +868,9 @@ fi
 
 echo ""
 echo "=== Key Match ==="
-CERT_MOD=$(openssl x509 -in "$CLIENT_CERT" -noout -modulus 2>/dev/null | md5sum)
-KEY_MOD=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | md5sum)
-if [ "$CERT_MOD" = "$KEY_MOD" ]; then
+CERT_PUB=$(openssl x509 -in "$CLIENT_CERT" -noout -pubkey 2>/dev/null | openssl dgst -md5)
+KEY_PUB=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | openssl dgst -md5)
+if [ "$CERT_PUB" = "$KEY_PUB" ]; then
   echo "PASS: Private key matches certificate"
 else
   echo "FAIL: Private key does not match certificate"
