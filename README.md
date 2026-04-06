@@ -720,6 +720,18 @@ akeyless list-auth-methods --json | \
 
 ## Test Authentication
 
+You need three things to authenticate:
+
+| Parameter | What it is | Where it came from |
+|-----------|-----------|-------------------|
+| `--access-id` | The access ID of the certificate auth method you created (starts with `p-`) | Printed when you ran `auth-method create cert`, or retrieved via `list-auth-methods` |
+| `--cert-file-name` | The **client certificate** - the leaf cert issued to you by your CA (not the CA certificate itself, not the intermediate) | Option A: `client-cert.pem` from step A.3. Option B: the signed cert your CA returned in step B.3. Option C: `client-cert.pem` from step C.2. |
+| `--key-file-name` | The **private key** that corresponds to the client certificate - generated when you created the CSR | Option A: `client-key.pem` from step A.3. Option B: `client-key.pem` from step B.3. Option C: `client-key.pem` from step C.2. |
+
+> **Common mistake:** Do not pass the CA certificate or intermediate CA here. The `--cert-file-name` is your client certificate (the leaf). The CA certificate was already uploaded when you created the auth method - Akeyless uses it server-side to validate the client cert you present.
+
+For the REST API, the same files are passed as base64-encoded strings (`cert-data` and `key-data`) instead of file paths.
+
 ### CLI (via Akeyless SaaS)
 
 ```bash
