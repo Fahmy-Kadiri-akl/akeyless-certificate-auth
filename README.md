@@ -64,7 +64,7 @@ graph TD
 
 ## How Certificate Auth Works
 
-When a client authenticates to Akeyless with a certificate, Akeyless does not call out to your CA or check a CRL in real time. Instead, it validates the client certificate locally against the CA certificate you uploaded when you created the auth method. The entire trust relationship is established at setup time.
+When a client authenticates to Akeyless with a certificate, the receiving endpoint (either the SaaS platform or a customer-deployed Gateway) validates the client certificate locally against the CA certificate you uploaded when you created the auth method. Akeyless does not call out to your CA or check a CRL in real time. The entire trust relationship is established at setup time.
 
 ```mermaid
 ---
@@ -82,23 +82,31 @@ config:
 ---
 sequenceDiagram
     participant Client as Client (pipeline, script, app)
-    participant AKL as Akeyless Platform
+    participant GW as Gateway<br/>(customer network)
+    participant AKL as Akeyless SaaS<br/>(api.akeyless.io)
 
     Note over Client: Has: client cert + private key
 
-    Client->>AKL: POST /auth {access-type: cert, cert-data, key-data}
-
-    Note over AKL: 1. Decode the client certificate
-    Note over AKL: 2. Verify signature against stored CA cert
-    Note over AKL: 3. Check expiration
-    Note over AKL: 4. Match sub-claims (CN, OU, etc.)
-
-    alt Validation passes
-        AKL-->>Client: {token: "t-xxxxx"}
-    else Validation fails
-        AKL-->>Client: 401 - "failed to verify client certificate"
+    alt Authenticate via Gateway (internal clients)
+        Client->>GW: POST /auth {access-type: cert, cert-data, key-data}
+        Note over GW: 1. Decode the client certificate<br/>2. Verify signature against stored CA cert<br/>3. Check expiration<br/>4. Match sub-claims (CN, OU, etc.)
+        alt Validation passes
+            GW-->>Client: {token: "t-xxxxx"}
+        else Validation fails
+            GW-->>Client: 401 - "failed to verify client certificate"
+        end
+    else Authenticate via SaaS (external clients)
+        Client->>AKL: POST /auth {access-type: cert, cert-data, key-data}
+        Note over AKL: Same 4 validation checks
+        alt Validation passes
+            AKL-->>Client: {token: "t-xxxxx"}
+        else Validation fails
+            AKL-->>Client: 401 - "failed to verify client certificate"
+        end
     end
 ```
+
+Both paths perform identical validation. The Gateway receives the auth method configuration (including the CA certificate) from the SaaS platform automatically - there is no separate upload step for the Gateway.
 
 Akeyless checks four things during certificate authentication:
 
