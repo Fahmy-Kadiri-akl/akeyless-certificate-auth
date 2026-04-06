@@ -430,6 +430,8 @@ How you export these depends on your CA platform. Refer to your platform's docum
 | EJBCA | [EJBCA CA certificate export](https://doc.primekey.com/ejbca/) |
 | HashiCorp Vault PKI | [PKI secrets engine - read CA certificate](https://developer.hashicorp.com/vault/api-docs/secret/pki#read-ca-certificate) |
 
+> **If your platform is a Registration Authority (RA):** Some platforms (AppViewX, Venafi, Keyfactor) can act as a front-end to a backend CA like Microsoft AD CS or an internal root CA. In this setup, the platform handles certificate requests and lifecycle management, but the actual signing is done by the backend CA. The certificates you need to export are from the **backend CA** - not from the RA platform itself. For example, if AppViewX submits CSRs to Microsoft AD CS for signing, you need the AD CS root and intermediate CA certificates, not any AppViewX-specific certificates. Ask your PKI team which CA is the actual signer, and export that chain.
+
 If your CA exports in DER format (`.cer`, `.der`) rather than PEM, convert it:
 
 ```bash
