@@ -920,6 +920,26 @@ If it shows only `TLS Web Server Authentication` (or nothing), you need to reiss
 - **Akeyless PKI:** Set `--client-flag true` on the certificate issuer
 - **openssl:** Create a file with `echo "extendedKeyUsage=clientAuth" > ext.cnf` and add `-extfile ext.cnf` when signing
 
+### "failed to decode intermediate certificate"
+
+Akeyless was able to read the root CA but could not parse the intermediate certificate in the chain. This is an encoding or format problem with a specific certificate in the chain file, not a trust or expiration issue.
+
+| Cause | How to check | Fix |
+|-------|-------------|-----|
+| **Extra text in the PEM** - Windows CA exports often include human-readable text (issuer, serial number, validity) above the `-----BEGIN CERTIFICATE-----` line | Open the file and look for text before the first `-----BEGIN` | Strip everything outside the markers: `sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' ca-chain.pem > ca-chain-clean.pem` |
+| **Windows line endings (CRLF)** | `file ca-chain.pem` shows "CRLF" or `cat -A ca-chain.pem` shows `^M` at end of lines | `sed -i 's/\r$//' ca-chain.pem` or `dos2unix ca-chain.pem` |
+| **PKCS7 wrapper** - the chain was exported as `.p7b` and renamed to `.pem` | `head -1 ca-chain.pem` shows `-----BEGIN PKCS7-----` | Extract certs: `openssl pkcs7 -in ca-chain.p7b -print_certs -out ca-chain.pem` |
+| **Missing newline between certificates** - END and BEGIN markers on the same line | `grep "END CERTIFICATE-----BEGIN" ca-chain.pem` finds a match | Add the newline: `sed -i 's/-----END CERTIFICATE----------BEGIN CERTIFICATE-----/-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----/g' ca-chain.pem` |
+| **Corrupted base64** - the certificate data was truncated or modified | `openssl x509 -in intermediate.pem -noout` fails | Re-export the intermediate CA certificate from your PKI |
+
+Run the diagnostic script to identify exactly which certificate in the chain has the problem:
+
+```bash
+bash scripts/verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
+```
+
+The script splits the chain file, tests each certificate individually, and reports which one failed to decode and why.
+
 ### "certificate is not in PEM format"
 
 Akeyless expects PEM-encoded certificates. If you exported from a Windows CA, you likely have DER or PKCS12 format.
@@ -933,54 +953,12 @@ openssl pkcs12 -in cert.pfx -out client-cert.pem -clcerts -nokeys
 openssl pkcs12 -in cert.pfx -out client-key.pem -nocerts -nodes
 ```
 
-### Quick diagnostic script
+### Diagnostic script
 
-Run this to validate your certificates before configuring Akeyless:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-CA_CERT="${1:-ca-chain.pem}"
-CLIENT_CERT="${2:-client-cert.pem}"
-CLIENT_KEY="${3:-client-key.pem}"
-
-echo "=== CA Certificate ==="
-openssl x509 -in "$CA_CERT" -noout -subject -issuer -dates 2>&1 || echo "FAIL: Cannot read CA cert"
-
-echo ""
-echo "=== Client Certificate ==="
-openssl x509 -in "$CLIENT_CERT" -noout -subject -issuer -dates 2>&1 || echo "FAIL: Cannot read client cert"
-
-echo ""
-echo "=== Chain Verification ==="
-openssl verify -CAfile "$CA_CERT" "$CLIENT_CERT" 2>&1
-
-echo ""
-echo "=== Key Usage ==="
-EKU=$(openssl x509 -in "$CLIENT_CERT" -noout -ext extendedKeyUsage 2>&1)
-if echo "$EKU" | grep -q "Client Authentication"; then
-  echo "PASS: clientAuth present"
-else
-  echo "FAIL: clientAuth missing - Akeyless will reject this certificate"
-  echo "$EKU"
-fi
-
-echo ""
-echo "=== Key Match ==="
-CERT_PUB=$(openssl x509 -in "$CLIENT_CERT" -noout -pubkey 2>/dev/null | openssl dgst -md5)
-KEY_PUB=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | openssl dgst -md5)
-if [ "$CERT_PUB" = "$KEY_PUB" ]; then
-  echo "PASS: Private key matches certificate"
-else
-  echo "FAIL: Private key does not match certificate"
-fi
-```
-
-Save as `verify-certs.sh` and run:
+The `scripts/verify-certs.sh` script validates your entire certificate setup before you touch Akeyless. It checks PEM format, PKCS7 wrappers, CRLF line endings, extraneous text, splits the chain to test each certificate individually, verifies the trust chain, checks clientAuth EKU, matches the private key, and checks expiration.
 
 ```bash
-bash verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
+bash scripts/verify-certs.sh ca-chain.pem client-cert.pem client-key.pem
 ```
 
 All checks should pass before you configure the Akeyless auth method.
