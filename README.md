@@ -114,24 +114,7 @@ Akeyless checks four things during certificate authentication:
 | **Key usage** | The client cert has `clientAuth` in its Extended Key Usage | Certificate was issued for `serverAuth` only (common with TLS server certs) |
 | **Sub-claims** | Optional constraints on CN, OU, DNS SANs, etc. configured on the auth method | CN in the cert doesn't match the sub-claim pattern |
 
-> **Key point:** Akeyless does not need to be your CA. It does not need to issue the client certificate. It only needs a copy of the CA certificate (or intermediate chain) that signed the client certificate, so it can verify the signature. Your CA can be anything - Microsoft AD CS, AppViewX, Venafi, Let's Encrypt, HashiCorp Vault PKI, or a self-signed root you generated with openssl.
-
-### Do I need to build a chain of trust in Akeyless?
-
-No. The Akeyless documentation mentions "Build your Chain of Trust" as one option for organizations that don't already have a PKI. This leads to a common misunderstanding: that Akeyless must act as your CA before certificate auth will work. That is not the case.
-
-Here is how certificate auth actually works, depending on your starting point:
-
-| Your situation | What to do | Do you need Akeyless PKI? |
-|----------------|-----------|--------------------------|
-| You have an enterprise CA (Microsoft AD CS, AppViewX, Venafi, etc.) | Export the CA chain, upload it to the Akeyless auth method, issue a client cert from your CA | **No.** Go to [Option B](#option-b-external-enterprise-ca). |
-| You don't have any PKI and want Akeyless to manage it | Use Akeyless to create a root CA, intermediate CA, and issue client certs | **Yes,** Go to [Option A](#option-a-akeyless-internal-pki). |
-| You want a quick setup for dev/test | Generate a self-signed CA and client cert with openssl | **No.** Go to [Option C](#option-c-self-signed-certificates). |
-| You have a self-signed certificate (no CA at all) | A single self-signed cert acts as both the CA and the client cert. Upload it to the auth method and present it during auth. | **No.** See the note in [Option C](#option-c-self-signed-certificates). |
-
-The "Build your Chain of Trust" path in the Akeyless docs is Option A above - it creates a DFC-protected root key inside Akeyless and uses it to sign an intermediate CA that issues client certificates. This is a convenience feature for organizations without existing PKI, not a prerequisite for certificate auth.
-
-If you already have a CA that issues certificates, you do not need to create anything in Akeyless beyond the auth method itself. Export your CA's certificate chain, upload it, and you're done.
+Certificate auth works with any CA - Akeyless validates the client certificate against the CA certificate you upload to the auth method. The CA can be an enterprise PKI (Microsoft AD CS, AppViewX, Venafi), the Akeyless built-in PKI, or a self-signed root generated with openssl. Akeyless also includes a "Build your Chain of Trust" feature that creates a full CA hierarchy inside the platform for organizations that want Akeyless to manage their PKI. This is [Option A](#option-a-akeyless-internal-pki) in this guide.
 
 ---
 
@@ -409,7 +392,7 @@ graph LR
     style CLIENT fill:#5CB85C,stroke:#449D44,color:#fff
 ```
 
-Akeyless does not need to connect to your CA. You export the CA certificates once and upload them. From that point, any client certificate signed by that CA (or its intermediates) can authenticate.
+The setup is a one-time export: get the CA certificates from your PKI, upload them to the Akeyless auth method, and any client certificate signed by that CA (or its intermediates) can authenticate from that point forward. There is no ongoing connection between Akeyless and your CA.
 
 ### B.1 Export the CA chain from your enterprise PKI
 
@@ -515,9 +498,7 @@ Skip to [Create the Auth Method in Akeyless](#create-the-auth-method-in-akeyless
 
 ## Option C: Self-Signed Certificates
 
-Use this for development, testing, and POC environments where you don't need an enterprise CA.
-
-> **This is not the same as using Akeyless as the CA.** Here you generate everything locally with openssl. The certificates are not managed by any CA infrastructure.
+Use this for development, testing, and POC environments. Everything is generated locally with openssl - no external CA or Akeyless PKI is involved.
 
 There are two variants:
 
@@ -756,7 +737,7 @@ For most certificate auth use cases (authenticate and fetch secrets), `defaults`
 
 See the [Akeyless Gateway Access Permissions documentation](https://docs.akeyless.io/docs/gateway-deploy-kubernetes-helm#access-permissions) for the full reference.
 
-> **If you skip this step**, authentication via the Gateway will fail with a permission error even though RBAC is correctly configured. This is the most common "it works with admin but not with my service account" issue.
+> Without Gateway Allowed Access, authentication via the Gateway will fail with a permission error even if RBAC is correctly configured. RBAC controls what an identity can access on the platform. Gateway Allowed Access controls whether the Gateway accepts requests from that identity at all.
 
 Note the **access ID** printed when the auth method was created (it starts with `p-`). You'll need this to authenticate.
 
