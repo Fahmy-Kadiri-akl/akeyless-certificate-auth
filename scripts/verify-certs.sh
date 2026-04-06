@@ -70,8 +70,10 @@ echo ""
 
 # 4. Extended Key Usage
 echo "[4] Extended Key Usage (clientAuth)"
-EKU=$(openssl x509 -in "$CLIENT_CERT" -noout -ext extendedKeyUsage 2>&1 || true)
-if echo "$EKU" | grep -q "Client Authentication"; then
+# Try -ext first (OpenSSL 1.1.1+), fall back to -text parsing (all versions)
+EKU=$(openssl x509 -in "$CLIENT_CERT" -noout -ext extendedKeyUsage 2>/dev/null || \
+      openssl x509 -in "$CLIENT_CERT" -noout -text 2>/dev/null | grep -A1 "Extended Key Usage" || true)
+if echo "$EKU" | grep -qi "Client Authentication\|clientAuth"; then
   pass "clientAuth EKU present"
 else
   fail "clientAuth EKU missing - Akeyless requires this"

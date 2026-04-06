@@ -248,41 +248,33 @@ graph LR
     style CLI fill:#5CB85C,stroke:#449D44,color:#fff
 ```
 
-### A.1 Create a Root CA key in Akeyless
+### A.1 Create a Root CA key with self-signed certificate
 
-This creates a DFC-protected RSA key that will act as your root CA. The private key never leaves Akeyless.
+This creates a DFC-protected RSA key and a self-signed root CA certificate in a single step. The private key never leaves Akeyless.
 
 ```bash
 akeyless create-dfc-key \
   --name "/PKI/CertAuth/RootCA" \
-  --alg RSA2048
-```
-
-### A.2 Generate the Root CA certificate
-
-Issue a self-signed root CA certificate from the key:
-
-```bash
-akeyless generate-csr \
-  --name "/PKI/CertAuth/RootCA" \
-  --common-name "Akeyless Root CA" \
+  --alg RSA2048 \
   --generate-self-signed-certificate true \
-  --ttl 315360000
+  --certificate-ttl 3650 \
+  --cert-sub-claims '{
+    "common_name": "Akeyless Root CA",
+    "organization": "YourOrg"
+  }'
 ```
 
-> The TTL is in seconds. `315360000` = 10 years. Adjust based on your security policy.
+> `--certificate-ttl` is in **days** (not seconds). `3650` = 10 years. Adjust based on your security policy.
 
 Export the root CA certificate:
 
 ```bash
-akeyless get-rsa-public \
-  --name "/PKI/CertAuth/RootCA" \
-  --cert-file-name root-ca.pem
+akeyless get-rsa-public --name "/PKI/CertAuth/RootCA" > root-ca.pem
 ```
 
-### A.3 Create a PKI Certificate Issuer (Intermediate CA)
+### A.2 Create a PKI Certificate Issuer (Intermediate CA)
 
-The certificate issuer is what actually signs client certificates. It acts as an intermediate CA chained to the root.
+The certificate issuer signs client certificates. It acts as an intermediate CA chained to the root.
 
 ```bash
 akeyless create-pki-cert-issuer \
@@ -294,7 +286,7 @@ akeyless create-pki-cert-issuer \
   --client-flag true \
   --server-flag false \
   --key-usage "DigitalSignature,KeyEncipherment" \
-  --organizational-units "DevOps"
+  --organization-units "DevOps"
 ```
 
 Key parameters:
@@ -306,20 +298,11 @@ Key parameters:
 | `--server-flag false` | Don't include `serverAuth` - these are client certs, not TLS server certs |
 | `--allow-any-name true` | Allow any CN/SAN - tighten this in production |
 | `--ttl` | Max lifetime of issued certificates (seconds). `31536000` = 1 year |
-| `--organizational-units` | OU to embed in issued certs - useful for sub-claim matching |
+| `--organization-units` | OU to embed in issued certs - useful for sub-claim matching |
 
-### A.4 Issue a client certificate
+### A.3 Issue a client certificate
 
-```bash
-akeyless get-pki-certificate \
-  --cert-issuer-name "/PKI/CertAuth/IntermediateCA" \
-  --key-data-base64 "$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 -w0)" \
-  --common-name "pipeline-client" \
-  --uri-sans "spiffe://example.com/pipeline" \
-  --ttl 2592000
-```
-
-Or generate the key separately and pass it:
+> **Important:** Always generate the private key separately and save it to a file. The inline approach (generating the key inside the command) discards the private key - you will have a signed certificate with no way to use it.
 
 ```bash
 # Generate a private key
@@ -334,27 +317,28 @@ akeyless get-pki-certificate \
   > client-cert.pem
 ```
 
-> **TTL:** `2592000` = 30 days. In production, use short-lived certificates and automate renewal.
+> **TTL:** `2592000` seconds = 30 days. In production, use short-lived certificates and automate renewal. On **macOS**, use `base64 -b 0` instead of `base64 -w0`.
 
-### A.5 Build the CA chain file
+### A.4 Build the CA chain file
 
-The client certificate is signed by the intermediate CA (the PKI Certificate Issuer), not directly by the root. You need to upload the full chain to the auth method. Export the intermediate CA certificate and concatenate it with the root:
+The client certificate is signed by the intermediate CA, not directly by the root. You need the full chain (intermediate + root) for the auth method.
+
+The intermediate CA certificate is included in the certificate chain returned when you issue a client cert. Extract it:
 
 ```bash
-# Export the intermediate CA certificate
-akeyless get-pki-certificate \
-  --cert-issuer-name "/PKI/CertAuth/IntermediateCA" \
-  --key-data-base64 "$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 -w0)" \
-  --common-name "IntermediateCA" \
-  --ttl 31536000 \
-  > intermediate-ca.pem
+# The get-pki-certificate output may include the full chain.
+# If it only returned the leaf cert, retrieve the issuer's CA chain:
+akeyless describe-item --name "/PKI/CertAuth/IntermediateCA" \
+  --json | jq -r '.certificate_chain_info.certificate_chain' > intermediate-ca.pem
 
 # Build the chain (intermediate first, root last)
 cat intermediate-ca.pem root-ca.pem > ca-chain.pem
 
-# Verify
+# Verify the chain is correct
 openssl verify -CAfile ca-chain.pem client-cert.pem
 ```
+
+> If `describe-item` does not return the chain, export the intermediate CA certificate from the Akeyless Console: navigate to **PKI > Certificate Issuers > your issuer > CA Certificate** and download the PEM.
 
 You now have:
 - `ca-chain.pem` - the CA chain (upload to Akeyless auth method)
@@ -426,17 +410,19 @@ You need the CA certificate chain in PEM format. The process varies by platform:
 #### Microsoft AD CS
 
 ```powershell
-# Export the root CA certificate
-certutil -ca.cert root-ca.pem
+# Export the root CA certificate (run on the root CA server, or specify -config)
+certutil -config "RootCA-Server\Root-CA" -ca.cert root-ca.cer
 
 # Export the issuing (intermediate) CA certificate
-certutil -ca.cert -config "CA-Server\Issuing-CA" intermediate-ca.pem
+certutil -config "IssuingCA-Server\Issuing-CA" -ca.cert intermediate-ca.cer
 
 # Or export from the Certification Authority MMC snap-in:
 # Right-click the CA > Properties > View Certificate > Details > Copy to File > Base-64 encoded X.509
 ```
 
-If you get a DER-encoded file (.cer/.der), convert it:
+> **Note:** Replace `RootCA-Server\Root-CA` and `IssuingCA-Server\Issuing-CA` with your actual CA server hostname and CA name. Run `certutil -config - -ping` to list available CAs on the network.
+
+`certutil` exports in DER format by default. Convert to PEM:
 
 ```bash
 openssl x509 -in certificate.cer -inform DER -out certificate.pem -outform PEM
@@ -475,11 +461,11 @@ Concatenate the certificates into a single PEM file. Order: **intermediate first
 cat intermediate-ca.pem root-ca.pem > ca-chain.pem
 ```
 
-Verify the chain:
+Verify the chain file contains both certificates:
 
 ```bash
-# Should show two certificates
-openssl storeutl -noout -text ca-chain.pem | grep "Subject:"
+# Should print 2
+grep -c "BEGIN CERTIFICATE" ca-chain.pem
 ```
 
 ### B.3 Generate a CSR and get it signed
@@ -498,8 +484,12 @@ openssl req -new -newkey rsa:2048 -nodes \
 For Microsoft AD CS, submit the CSR using `certreq`:
 
 ```powershell
-certreq -submit -config "CA-Server\Issuing-CA" -attrib "CertificateTemplate:ClientAuth" client.csr client-cert.pem
+certreq -submit -config "CA-Server\Issuing-CA" -attrib "CertificateTemplate:YourClientAuthTemplate" client.csr client-cert.cer
 ```
+
+> **Template name:** Replace `YourClientAuthTemplate` with the display name of a certificate template on your CA that includes the Client Authentication EKU. Common names: `ClientAuth`, `Workstation Authentication`, or a custom template your PKI team created.
+
+> **Output format:** `certreq` outputs DER by default. Convert to PEM: `openssl x509 -in client-cert.cer -inform DER -out client-cert.pem -outform PEM`
 
 For AppViewX, submit via the AppViewX portal under **Certificate Management > Enroll Certificate**, select the client authentication template, and paste the CSR.
 
@@ -526,7 +516,11 @@ If this fails, Akeyless authentication will also fail. Fix the chain before proc
 Check that `clientAuth` is present:
 
 ```bash
+# OpenSSL 1.1.1+
 openssl x509 -in client-cert.pem -noout -ext extendedKeyUsage
+
+# OpenSSL 1.0.x / LibreSSL (macOS default)
+openssl x509 -in client-cert.pem -noout -text | grep -A1 "Extended Key Usage"
 ```
 
 Expected output should include `TLS Web Client Authentication`.
@@ -559,6 +553,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout client-key.pem -out client-cert.pem -days 365 \
   -subj "/CN=pipeline-client/OU=DevOps" \
   -addext "extendedKeyUsage=clientAuth"
+# Note: -addext requires OpenSSL 1.1.1+. On older versions, use -extfile instead.
 
 # Use the same cert as both the CA and client cert
 # Upload client-cert.pem as the CA in the auth method
@@ -590,11 +585,16 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out client-key.pem
 openssl req -new -key client-key.pem -out client.csr \
   -subj "/CN=pipeline-client/OU=DevOps"
 
+# Create an extensions file for clientAuth EKU
+echo "extendedKeyUsage=clientAuth" > client-ext.cnf
+
 # Sign the CSR with the CA (1-year validity, with clientAuth)
 openssl x509 -req -in client.csr \
   -CA ca-cert.pem -CAkey ca-key.pem -CAcreateserial \
   -out client-cert.pem -days 365 \
-  -extfile <(printf "extendedKeyUsage=clientAuth")
+  -extfile client-ext.cnf
+
+rm client-ext.cnf
 ```
 
 ### C.3 Verify
@@ -621,7 +621,7 @@ This step is the same regardless of which CA option you used above. You need the
 ### Using the Akeyless CLI
 
 ```bash
-akeyless create-auth-method-cert \
+akeyless auth-method create cert \
   --name "/Auth/CertificateAuth" \
   --unique-identifier "common_name" \
   --certificate-data "$(base64 -w0 ca-chain.pem)"
@@ -650,7 +650,7 @@ The `--unique-identifier` determines what shows up in audit logs and can be used
 Sub-claims restrict which client certificates can authenticate. Without sub-claims, any certificate signed by the uploaded CA will be accepted.
 
 ```bash
-akeyless update-auth-method-cert \
+akeyless auth-method update cert \
   --name "/Auth/CertificateAuth" \
   --bound-common-names "pipeline-client,akeyless-*" \
   --bound-organizational-units "DevOps"
@@ -786,7 +786,7 @@ This is the most common error. It means Akeyless could not validate the signatur
 To update an existing auth method's CA certificate:
 
 ```bash
-akeyless update-auth-method-cert \
+akeyless auth-method update cert \
   --name "/Auth/CertificateAuth" \
   --certificate-data "$(base64 -w0 ca-chain.pem)"
 ```
@@ -818,7 +818,7 @@ If it shows only `TLS Web Server Authentication` (or nothing), you need to reiss
 - **Microsoft AD CS:** Use a certificate template that includes "Client Authentication" in the Application Policies
 - **AppViewX:** Select a template with Client Authentication EKU
 - **Akeyless PKI:** Set `--client-flag true` on the certificate issuer
-- **openssl:** Add `-extfile <(printf "extendedKeyUsage=clientAuth")` when signing
+- **openssl:** Create a file with `echo "extendedKeyUsage=clientAuth" > ext.cnf` and add `-extfile ext.cnf` when signing
 
 ### "certificate is not in PEM format"
 
