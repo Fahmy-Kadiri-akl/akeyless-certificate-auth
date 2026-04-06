@@ -400,53 +400,34 @@ Akeyless does not need to connect to your CA. You export the CA certificates onc
 
 ### B.1 Export the CA chain from your enterprise PKI
 
-You need the CA certificate chain in PEM format. The process varies by platform:
+You need two files from your PKI team, both in **PEM format**:
 
-#### Microsoft AD CS
+| File | What it is |
+|------|-----------|
+| **Root CA certificate** | The top-level trust anchor in your PKI hierarchy |
+| **Intermediate/Issuing CA certificate** | The CA that directly signs client certificates (skip if your root CA signs directly) |
 
-```powershell
-# Export the root CA certificate (run on the root CA server, or specify -config)
-certutil -config "RootCA-Server\Root-CA" -ca.cert root-ca.cer
+How you export these depends on your CA platform. Refer to your platform's documentation:
 
-# Export the issuing (intermediate) CA certificate
-certutil -config "IssuingCA-Server\Issuing-CA" -ca.cert intermediate-ca.cer
+| Platform | Where to find CA export instructions |
+|----------|--------------------------------------|
+| Microsoft AD CS | [Export a CA certificate](https://learn.microsoft.com/en-us/windows-server/identity/ad-cs/export-certificate-authority-certificate) |
+| AppViewX | [Certificate Management documentation](https://docs.appviewx.com/) |
+| Venafi Trust Protection Platform | [Venafi documentation](https://docs.venafi.com/) |
+| EJBCA | [EJBCA CA certificate export](https://doc.primekey.com/ejbca/) |
+| HashiCorp Vault PKI | [PKI secrets engine - read CA certificate](https://developer.hashicorp.com/vault/api-docs/secret/pki#read-ca-certificate) |
 
-# Or export from the Certification Authority MMC snap-in:
-# Right-click the CA > Properties > View Certificate > Details > Copy to File > Base-64 encoded X.509
-```
-
-> **Note:** Replace `RootCA-Server\Root-CA` and `IssuingCA-Server\Issuing-CA` with your actual CA server hostname and CA name. Run `certutil -config - -ping` to list available CAs on the network.
-
-`certutil` exports in DER format by default. Convert to PEM:
+If your CA exports in DER format (`.cer`, `.der`) rather than PEM, convert it:
 
 ```bash
 openssl x509 -in certificate.cer -inform DER -out certificate.pem -outform PEM
 ```
 
-#### AppViewX
-
-1. Navigate to **Certificate Management > CA Certificates**
-2. Select your Root CA and Issuing CA
-3. Export each in PEM format
-4. If AppViewX is acting as an RA (Registration Authority) in front of Microsoft AD CS, export the AD CS root and intermediate - those are the actual signing CAs
-
-#### Venafi Trust Protection Platform
+If you receive a PKCS12 bundle (`.pfx`, `.p12`), extract the certificate:
 
 ```bash
-# Using the Venafi CLI (vcert)
-vcert getcred --url https://tpp.example.com --trust-bundle ca-chain.pem
+openssl pkcs12 -in bundle.pfx -out certificate.pem -clcerts -nokeys
 ```
-
-Or export from the Venafi web UI under **Policy > CA Templates**.
-
-#### Generic / Other CAs
-
-The files you need are the same regardless of platform:
-
-| File | What it is | Where to find it |
-|------|-----------|------------------|
-| `root-ca.pem` | Root CA certificate | Your PKI team, or exported from the CA server |
-| `intermediate-ca.pem` | Issuing/Intermediate CA certificate | Your PKI team, or exported from the CA server |
 
 ### B.2 Build the CA chain file
 
@@ -474,21 +455,9 @@ openssl req -new -newkey rsa:2048 -nodes \
   -subj "/CN=akeyless-pipeline/OU=DevOps/O=YourOrg"
 ```
 
-> **Important:** Include the `clientAuth` extended key usage. Add this to your openssl config or request it from your CA when submitting the CSR. Without `clientAuth`, Akeyless will reject the certificate with "failed to verify client certificate."
+Submit the CSR to your CA through your standard certificate request process (web portal, CLI tool, ticketing system, etc.). When submitting, request a **client authentication** certificate template or profile.
 
-For Microsoft AD CS, submit the CSR using `certreq`:
-
-```powershell
-certreq -submit -config "CA-Server\Issuing-CA" -attrib "CertificateTemplate:YourClientAuthTemplate" client.csr client-cert.cer
-```
-
-> **Template name:** Replace `YourClientAuthTemplate` with the display name of a certificate template on your CA that includes the Client Authentication EKU. Common names: `ClientAuth`, `Workstation Authentication`, or a custom template your PKI team created.
-
-> **Output format:** `certreq` outputs DER by default. Convert to PEM: `openssl x509 -in client-cert.cer -inform DER -out client-cert.pem -outform PEM`
-
-For AppViewX, submit via the AppViewX portal under **Certificate Management > Enroll Certificate**, select the client authentication template, and paste the CSR.
-
-For other CAs, follow your standard certificate request process. The key requirement is:
+The certificate you get back must meet these requirements:
 
 | Requirement | Why |
 |-------------|-----|
@@ -812,8 +781,7 @@ openssl x509 -in client-cert.pem -noout -ext extendedKeyUsage
 
 If it shows only `TLS Web Server Authentication` (or nothing), you need to reissue the certificate with `clientAuth` enabled:
 
-- **Microsoft AD CS:** Use a certificate template that includes "Client Authentication" in the Application Policies
-- **AppViewX:** Select a template with Client Authentication EKU
+- **Enterprise CA:** Request a certificate using a template or profile that includes "Client Authentication" in the Extended Key Usage / Application Policies. Consult your PKI team or CA platform documentation.
 - **Akeyless PKI:** Set `--client-flag true` on the certificate issuer
 - **openssl:** Create a file with `echo "extendedKeyUsage=clientAuth" > ext.cnf` and add `-extfile ext.cnf` when signing
 
