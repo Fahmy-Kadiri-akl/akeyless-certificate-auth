@@ -730,20 +730,29 @@ akeyless gateway-create-allowed-access \
   --gateway-url "https://your-gateway.example.com:8000"
 ```
 
-Assign the minimum permissions needed:
+Assign the minimum permissions needed for what this identity will do through the Gateway:
 
-| Permission | When needed |
+| Permission | Description |
 |-----------|-------------|
-| `defaults` | Basic Gateway access (sufficient for authentication and secret retrieval through the Gateway) |
-| `targets` | Creating or managing web targets |
-| `dynamic_secret` | Managing dynamic secret configuration |
-| `rotated_secret` | Managing rotated secret configuration |
-| `log_forwarding` | Managing log forwarding settings |
-| `caching` | Managing cache settings |
-| `kmip` | Managing KMIP service |
-| `admin` | Full Gateway administration (avoid in production - use least privilege) |
+| `admin` | Full Gateway administration, including managing Access Permissions. Avoid in production - use least privilege. |
+| `defaults` | Management of default Gateway settings (Gateway URL, TLS, default encryption key, default login access ID) |
+| `targets` | Management of all target items created through the Gateway |
+| `dynamic_secret` | Management of dynamic secret configuration |
+| `rotated_secret` | Management of rotated secret configuration |
+| `rotate-secret-value` | Permission to only rotate the secret value without editing the secret's configuration |
+| `classic_keys` | Management of classic keys |
+| `automatic_migration` | Management of automatic migration settings |
+| `log_forwarding` | Management of log forwarding settings |
+| `zero_knowledge_encryption` | Management of zero-knowledge encryption settings |
+| `caching` | Management of Gateway cache settings |
+| `event_forwarding` | Management of Event Center forwarding settings |
+| `ldap_auth` | Management of LDAP auth Gateway configuration |
+| `k8s_auth` | Management of Kubernetes auth Gateway configuration |
+| `kmip` | Management of KMIP server settings |
 
-For most certificate auth use cases (authenticate and fetch secrets), `defaults` is sufficient. Add `rotated_secret` if the identity will trigger rotations, or `targets` if it will manage targets.
+For most certificate auth use cases (authenticate and fetch secrets), `defaults` is sufficient. Add `rotated_secret` and `rotate-secret-value` if the identity will trigger rotations, `targets` if it will manage targets, or `event_forwarding` if it will manage webhook forwarders.
+
+See the [Akeyless Gateway Access Permissions documentation](https://docs.akeyless.io/docs/gateway-deploy-kubernetes-helm#access-permissions) for the full reference.
 
 > **If you skip this step**, authentication via the Gateway will fail with a permission error even though RBAC is correctly configured. This is the most common "it works with admin but not with my service account" issue.
 
