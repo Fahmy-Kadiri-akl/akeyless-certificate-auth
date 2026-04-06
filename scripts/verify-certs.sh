@@ -120,13 +120,18 @@ else
 
     if echo "$SUBJ" | grep -q "DECODE FAILED"; then
       fail "Certificate #${CERT_INDEX} in chain FAILED TO DECODE"
-      echo "       This is the 'failed to decode intermediate certificate' error."
-      echo "       Common causes:"
-      echo "         - Extra text or whitespace around the certificate data"
-      echo "         - PKCS7 content inside PEM markers"
-      echo "         - Corrupted base64 encoding"
-      echo "       Extract the raw certificate and re-encode it:"
-      echo "         openssl x509 -in <problem-cert> -out fixed.pem"
+      echo "       This causes the 'failed to decode intermediate certificate' error in Akeyless."
+      echo ""
+      echo "       Problem:  The base64 data in certificate #${CERT_INDEX} cannot be parsed as an X.509 certificate."
+      echo "       Causes:   - Corrupted or truncated base64 encoding"
+      echo "                 - Extra text or whitespace inside the BEGIN/END markers"
+      echo "                 - PKCS7 content wrapped in PEM certificate markers"
+      echo "                 - File was modified or copy-pasted incorrectly"
+      echo ""
+      echo "       Fix:      Re-export certificate #${CERT_INDEX} from your CA and rebuild the chain."
+      echo "                 If you have the original cert file, re-encode it cleanly:"
+      echo "                   openssl x509 -in original-cert.pem -out clean-cert.pem"
+      echo "                 Then rebuild:  cat intermediate-ca.pem root-ca.pem > ca-chain.pem"
     else
       IS_CA=$(openssl x509 -in "$f" -noout -text 2>/dev/null | grep -c "CA:TRUE" || true)
       if [ "$IS_CA" -gt 0 ]; then
@@ -187,11 +192,25 @@ VERIFY_OUTPUT=$(openssl verify -CAfile "$CA_CERT" "$CLIENT_CERT" 2>&1 || true)
 if echo "$VERIFY_OUTPUT" | grep -q ": OK"; then
   pass "Client cert is signed by the CA chain"
 else
-  fail "Chain verification failed: $VERIFY_OUTPUT"
+  fail "Chain verification failed"
+  echo "  OpenSSL output: $VERIFY_OUTPUT"
   echo ""
-  echo "  This is the most common cause of 'failed to verify client certificate'"
-  echo "  in Akeyless. If you have an intermediate CA, concatenate the chain:"
-  echo "    cat intermediate-ca.pem root-ca.pem > ca-chain.pem"
+  if echo "$VERIFY_OUTPUT" | grep -q "unable to get local issuer"; then
+    echo "  Problem:  The client certificate was signed by a CA that is not in your chain file."
+    echo "            This usually means the chain is missing the intermediate CA certificate."
+    echo "  Fix:      Get the intermediate CA cert from your PKI team and rebuild the chain:"
+    echo "              cat intermediate-ca.pem root-ca.pem > ca-chain.pem"
+  elif echo "$VERIFY_OUTPUT" | grep -q "certificate has expired"; then
+    echo "  Problem:  A certificate in the chain or the client cert has expired."
+    echo "  Fix:      Check the expiration dates below (section 8) and reissue the expired cert."
+  elif echo "$VERIFY_OUTPUT" | grep -q "Error loading"; then
+    echo "  Problem:  The CA chain file could not be loaded. It may be corrupted or in the wrong format."
+    echo "  Fix:      Check sections 1 and 2 above for format and encoding errors."
+  else
+    echo "  Problem:  The client certificate's signature does not trace back to the CA chain you provided."
+    echo "  Fix:      Verify you exported the correct CA certificates from the PKI that issued the client cert."
+    echo "            Check the issuer field: openssl x509 -in ${CLIENT_CERT} -noout -issuer"
+  fi
 fi
 echo ""
 
@@ -205,9 +224,14 @@ EKU=$(openssl x509 -in "$CLIENT_CERT" -noout -ext extendedKeyUsage 2>/dev/null |
 if echo "$EKU" | grep -qi "Client Authentication\|clientAuth"; then
   pass "clientAuth EKU present"
 else
-  fail "clientAuth EKU missing - Akeyless requires this"
+  fail "clientAuth EKU missing - Akeyless will reject this certificate"
   echo "  Current EKU: ${EKU:-none}"
-  echo "  Reissue the cert with a client authentication template/profile"
+  echo ""
+  echo "  Problem:  The client certificate does not include the 'TLS Web Client Authentication'"
+  echo "            extended key usage. Akeyless requires this to accept the cert for authentication."
+  echo "  Fix:      Reissue the certificate from your CA using a client authentication template."
+  echo "            For openssl: add '-extfile <(echo extendedKeyUsage=clientAuth)' when signing."
+  echo "            For enterprise CAs: request a cert with the 'Client Authentication' EKU enabled."
 fi
 echo ""
 
@@ -218,11 +242,24 @@ echo "[7] Private Key Match"
 CERT_PUB=$(openssl x509 -in "$CLIENT_CERT" -noout -pubkey 2>/dev/null | openssl dgst -md5)
 KEY_PUB=$(openssl pkey -in "$CLIENT_KEY" -pubout 2>/dev/null | openssl dgst -md5)
 if [ -z "$KEY_PUB" ]; then
-  fail "Cannot read private key (is it passphrase-protected or in the wrong format?)"
+  fail "Cannot read private key"
+  echo "  Problem:  The private key file could not be parsed. It may be passphrase-protected,"
+  echo "            in DER format, or in PKCS8/PKCS12 format instead of PEM."
+  echo "  Fix:      - Passphrase-protected: openssl pkey -in ${CLIENT_KEY} -out key-decrypted.pem"
+  echo "            - DER format: openssl pkey -in ${CLIENT_KEY} -inform DER -out key.pem"
+  echo "            - PKCS12: openssl pkcs12 -in bundle.pfx -out key.pem -nocerts -nodes"
 elif [ "$CERT_PUB" = "$KEY_PUB" ]; then
   pass "Private key matches certificate"
 else
   fail "Private key does NOT match certificate"
+  echo ""
+  echo "  Problem:  The private key in ${CLIENT_KEY} was not used to generate the certificate in ${CLIENT_CERT}."
+  echo "            These two files must be a matching pair from the same CSR/key generation."
+  echo "  Fix:      Verify which key was used to generate the cert:"
+  echo "              openssl x509 -in ${CLIENT_CERT} -noout -pubkey | openssl dgst -sha256"
+  echo "              openssl pkey -in ${CLIENT_KEY} -pubout | openssl dgst -sha256"
+  echo "            The SHA-256 hashes must match. If they don't, locate the correct private key"
+  echo "            or regenerate a new key+CSR and have your CA sign it again."
 fi
 echo ""
 
@@ -232,17 +269,32 @@ echo ""
 echo "[8] Expiration"
 if openssl x509 -in "$CLIENT_CERT" -noout -checkend 0 2>/dev/null; then
   pass "Client certificate is not expired"
+  EXPIRY_DATE=$(openssl x509 -in "$CLIENT_CERT" -noout -enddate 2>/dev/null | cut -d= -f2)
+  echo "       Expires: ${EXPIRY_DATE}"
   if ! openssl x509 -in "$CLIENT_CERT" -noout -checkend 2592000 2>/dev/null; then
-    warn "Client certificate expires within 30 days"
+    warn "Client certificate expires within 30 days - plan for renewal"
   fi
 else
-  fail "Client certificate is expired"
+  EXPIRY_DATE=$(openssl x509 -in "$CLIENT_CERT" -noout -enddate 2>/dev/null | cut -d= -f2)
+  fail "Client certificate is expired (was valid until: ${EXPIRY_DATE})"
+  echo "  Problem:  Akeyless will reject expired certificates during authentication."
+  echo "  Fix:      Reissue the client certificate from your CA:"
+  echo "            1. Generate a new CSR:  openssl req -new -key ${CLIENT_KEY} -out new.csr -subj \"/CN=your-cn\""
+  echo "            2. Submit to your CA for signing with clientAuth EKU"
+  echo "            3. Replace ${CLIENT_CERT} with the new certificate"
 fi
 
 if openssl x509 -in "$CA_CERT" -noout -checkend 0 2>/dev/null; then
   pass "CA certificate is not expired"
+  CA_EXPIRY=$(openssl x509 -in "$CA_CERT" -noout -enddate 2>/dev/null | cut -d= -f2)
+  echo "       Expires: ${CA_EXPIRY}"
 else
-  fail "CA certificate is expired"
+  CA_EXPIRY=$(openssl x509 -in "$CA_CERT" -noout -enddate 2>/dev/null | cut -d= -f2)
+  fail "CA certificate is expired (was valid until: ${CA_EXPIRY})"
+  echo "  Problem:  An expired CA certificate means Akeyless cannot validate any client certs signed by it."
+  echo "  Fix:      Get the renewed CA certificate from your PKI team and update the auth method:"
+  echo "              akeyless auth-method update cert --name \"/Auth/CertificateAuth\" \\"
+  echo "                --certificate-data \"\$(base64 -w0 new-ca-chain.pem)\""
 fi
 echo ""
 
