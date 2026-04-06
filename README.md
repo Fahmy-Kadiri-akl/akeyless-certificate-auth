@@ -114,7 +114,16 @@ Akeyless checks four things during certificate authentication:
 | **Key usage** | The client cert has `clientAuth` in its Extended Key Usage | Certificate was issued for `serverAuth` only (common with TLS server certs) |
 | **Sub-claims** | Optional constraints on CN, OU, DNS SANs, etc. configured on the auth method | CN in the cert doesn't match the sub-claim pattern |
 
-Certificate auth works with any CA - Akeyless validates the client certificate against the CA certificate you upload to the auth method. The CA can be an enterprise PKI (Microsoft AD CS, AppViewX, Venafi), the Akeyless built-in PKI, or a self-signed root generated with openssl. Akeyless also includes a "Build your Chain of Trust" feature that creates a full CA hierarchy inside the platform for organizations that want Akeyless to manage their PKI. This is [Option A](#option-a-akeyless-internal-pki) in this guide.
+Certificate auth works with any CA - Akeyless validates the client certificate against the CA certificate you upload to the auth method. The CA can be an enterprise PKI, the Akeyless built-in PKI, or a self-signed root generated with openssl.
+
+| Starting point | What to do | Akeyless PKI needed? |
+|----------------|-----------|---------------------|
+| You have an enterprise CA (Microsoft AD CS, AppViewX, Venafi, etc.) | Export the CA chain, upload it to the auth method, issue a client cert from your CA | No - go to [Option B](#option-b-external-enterprise-ca) |
+| You have no PKI and want Akeyless to manage it | Use Akeyless to create a root CA, intermediate CA, and issue client certs | Yes - go to [Option A](#option-a-akeyless-internal-pki) |
+| You need a quick setup for dev/test | Generate a self-signed CA and client cert with openssl | No - go to [Option C](#option-c-self-signed-certificates) |
+| You have a standalone self-signed certificate (no CA) | Upload the same cert as both the CA and the client cert | No - see the C-2 variant in [Option C](#option-c-self-signed-certificates) |
+
+Akeyless also includes a "Build your Chain of Trust" feature that creates a full CA hierarchy inside the platform. This is Option A above - a convenience for organizations that want managed PKI, not a prerequisite for certificate auth.
 
 ---
 
