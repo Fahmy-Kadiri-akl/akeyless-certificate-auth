@@ -163,6 +163,156 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# 2b. DER Structure and Go Compatibility Checks
+# ---------------------------------------------------------------------------
+echo "[2b] DER Structure and Go Compatibility (Akeyless-specific)"
+
+if [ "$CERT_COUNT" -gt 0 ]; then
+  TMPDIR2=$(mktemp -d)
+  csplit -f "${TMPDIR2}/cert-" -z -s "$CA_CERT" '/-----BEGIN CERTIFICATE-----/' '{*}' 2>/dev/null || true
+
+  CERT_INDEX2=0
+  for f in "${TMPDIR2}"/cert-*; do
+    if [ ! -s "$f" ] || ! grep -q "BEGIN CERTIFICATE" "$f" 2>/dev/null; then
+      continue
+    fi
+    CERT_INDEX2=$((CERT_INDEX2 + 1))
+    SUBJ2=$(openssl x509 -in "$f" -noout -subject 2>/dev/null | sed 's/^subject=//' || echo "unknown")
+
+    # Convert to DER and check for null bytes in IA5String values
+    DER_HEX=$(openssl x509 -in "$f" -outform DER 2>/dev/null | xxd -p | tr -d '\n' || true)
+    if [ -n "$DER_HEX" ]; then
+
+      # Check for null-terminated URIs in extensions (common Microsoft AD CS bug)
+      # Look for CPS/CRL URIs ending with .txt\x00, .htm\x00, .asp\x00, .crl\x00
+      if echo "$DER_HEX" | grep -q "2e74787400\|2e68746d00\|2e61737000\|2e63726c00" 2>/dev/null; then
+        fail "Certificate #${CERT_INDEX2} has null-terminated URI in extensions (${SUBJ2})"
+        echo "       This is a Microsoft AD CS bug. The CPS URI ends with \\x00 (null byte)."
+        echo "       OpenSSL ignores this, but Akeyless (Go x509) may reject it."
+        echo "       This is the most likely cause of 'failed to decode intermediate cert'."
+        echo ""
+        echo "       Fix options:"
+        echo "         1. Re-export the CA cert from AD CS with a clean CPS URI"
+        echo "         2. Strip the Certificate Policies extension (if acceptable):"
+        echo "            openssl x509 -in cert.pem -outform DER | \\"
+        echo "              openssl x509 -inform DER -outform PEM > clean-cert.pem"
+        echo "         3. Ask your PKI team to reissue the CA cert without null-terminated strings"
+      else
+        pass "Certificate #${CERT_INDEX2} has no null-terminated URIs"
+      fi
+
+      # Check for Microsoft-specific extensions that may cause Go parsing issues
+      MS_EXTS=$(openssl x509 -in "$f" -noout -text 2>/dev/null | grep -c "1.3.6.1.4.1.311" || true)
+      if [ "$MS_EXTS" -gt 0 ]; then
+        warn "Certificate #${CERT_INDEX2} has ${MS_EXTS} Microsoft-specific extension(s) (${SUBJ2})"
+        echo "       Microsoft AD CS extensions (OID 1.3.6.1.4.1.311.*) may contain non-standard"
+        echo "       ASN.1 encoding (BMPStrings, null-terminated values) that Go rejects."
+        echo "       If Akeyless fails to parse this cert, the MS extensions are a likely culprit."
+      fi
+
+      # Check for oversized Certificate Policies (BMPString policy text > 256 bytes)
+      POLICY_SIZE=$(openssl x509 -in "$f" -outform DER 2>/dev/null | \
+        openssl asn1parse -inform DER -in /dev/stdin 2>/dev/null | \
+        grep "Certificate Policies" | head -1 | sed -n 's/.*l=[ ]*\([0-9]*\).*/\1/p' || echo "0")
+      if [ "${POLICY_SIZE:-0}" -gt 256 ]; then
+        warn "Certificate #${CERT_INDEX2} has oversized Certificate Policies (${POLICY_SIZE} bytes)"
+        echo "       Large BMPString/UTF-16 policy text from Microsoft CAs can cause issues"
+        echo "       with some Go x509 parsers."
+      fi
+    fi
+  done
+
+  # Base64 roundtrip test (simulates Akeyless --certificate-data submission)
+  echo ""
+  echo "  Base64 roundtrip test (simulates Akeyless --certificate-data):"
+  B64_ENCODED=$(base64 -w0 "$CA_CERT" 2>/dev/null || base64 "$CA_CERT" 2>/dev/null | tr -d '\n')
+  ROUNDTRIP_FILE="${TMPDIR2}/roundtrip.pem"
+  echo "$B64_ENCODED" | base64 -d > "$ROUNDTRIP_FILE" 2>/dev/null || \
+    echo "$B64_ENCODED" | base64 -D > "$ROUNDTRIP_FILE" 2>/dev/null || true
+  ROUNDTRIP_COUNT=$(grep -c "BEGIN CERTIFICATE" "$ROUNDTRIP_FILE" 2>/dev/null || echo "0")
+  if [ "$ROUNDTRIP_COUNT" -eq "$CERT_COUNT" ]; then
+    ORIG_MD5=$(openssl dgst -md5 "$CA_CERT" 2>/dev/null | awk '{print $NF}')
+    RT_MD5=$(openssl dgst -md5 "$ROUNDTRIP_FILE" 2>/dev/null | awk '{print $NF}')
+    if [ "$ORIG_MD5" = "$RT_MD5" ]; then
+      pass "Base64 roundtrip preserves all ${CERT_COUNT} certificates (checksums match)"
+    else
+      fail "Base64 roundtrip altered the file content"
+      echo "       The PEM content changes after base64 encode/decode."
+      echo "       Check for trailing newlines or encoding issues."
+    fi
+  else
+    fail "Base64 roundtrip lost certificates (${CERT_COUNT} -> ${ROUNDTRIP_COUNT})"
+    echo "       The base64 encode/decode cycle lost certificates from the chain."
+  fi
+
+  # Go x509 parse test (if Go is available)
+  if command -v go &>/dev/null; then
+    echo ""
+    echo "  Go x509 parse test (matches Akeyless runtime):"
+    GO_TEST_FILE="${TMPDIR2}/go_test.go"
+    cat > "$GO_TEST_FILE" << 'GOTEST'
+package main
+
+import (
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"os"
+)
+
+func main() {
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		fmt.Printf("FAIL: cannot read file: %v\n", err)
+		os.Exit(1)
+	}
+	idx := 0
+	rest := data
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		idx++
+		_, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			fmt.Printf("FAIL: cert #%d: %v\n", idx, err)
+			os.Exit(1)
+		}
+		fmt.Printf("OK: cert #%d parsed\n", idx)
+	}
+	if idx == 0 {
+		fmt.Println("FAIL: no PEM blocks found")
+		os.Exit(1)
+	}
+}
+GOTEST
+    GO_OUTPUT=$(cd "${TMPDIR2}" && go run go_test.go "$CA_CERT" 2>&1)
+    GO_EXIT=$?
+    if [ $GO_EXIT -eq 0 ]; then
+      pass "Go x509.ParseCertificate accepts all certificates"
+      echo "       $GO_OUTPUT"
+    else
+      fail "Go x509.ParseCertificate REJECTS a certificate"
+      echo "       $GO_OUTPUT"
+      echo ""
+      echo "       This confirms Akeyless will reject this chain."
+      echo "       The Go error above shows exactly what Akeyless sees."
+    fi
+  else
+    warn "Go not installed - cannot run Go x509 parse test"
+    echo "       Install Go to test cert parsing with the same runtime Akeyless uses."
+    echo "       This is the most reliable way to predict Akeyless behavior."
+  fi
+
+  rm -rf "${TMPDIR2}"
+fi
+
+echo ""
+
+
+# ---------------------------------------------------------------------------
 # 3. CA Certificate details
 # ---------------------------------------------------------------------------
 echo "[3] CA Certificate Details"

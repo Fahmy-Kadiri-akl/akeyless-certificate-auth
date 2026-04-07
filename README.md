@@ -57,8 +57,8 @@ graph TD
 5. [Option C: Self-Signed Certificates](#option-c-self-signed-certificates)
 6. [Create the Auth Method in Akeyless](#create-the-auth-method-in-akeyless)
 7. [Test Authentication](#test-authentication)
-8. [Using Certificate Auth in Pipelines](#using-certificate-auth-in-pipelines)
-9. [Verify Your Certificates](#verify-your-certificates)
+8. [Verify Your Certificates](#verify-your-certificates)
+9. [Using Certificate Auth in Pipelines](#using-certificate-auth-in-pipelines)
 10. [Troubleshooting](#troubleshooting)
 
 ---
